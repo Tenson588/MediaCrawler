@@ -101,7 +101,11 @@ class XiaoHongShuCrawler(AbstractCrawler):
                 await self.browser_context.add_init_script(path="libs/stealth.min.js")
 
             self.context_page = await self.browser_context.new_page()
-            await self.context_page.goto(self.index_url)
+            await self.context_page.goto(
+                self.index_url,
+                wait_until="domcontentloaded",
+                timeout=60_000,
+            )
 
             # Create a client to interact with the Xiaohongshu website.
             self.xhs_client = await self.create_xhs_client(httpx_proxy_format)
@@ -423,6 +427,7 @@ class XiaoHongShuCrawler(AbstractCrawler):
     ) -> BrowserContext:
         """Launch browser and create browser context"""
         utils.logger.info("[XiaoHongShuCrawler.launch_browser] Begin create browser context ...")
+        executable_path = config.CUSTOM_BROWSER_PATH or None
         if config.SAVE_LOGIN_STATE:
             # feat issue #14
             # we will save login state to avoid login every time
@@ -437,10 +442,15 @@ class XiaoHongShuCrawler(AbstractCrawler):
                     "height": 1080
                 },
                 user_agent=user_agent,
+                executable_path=executable_path,
             )
             return browser_context
         else:
-            browser = await chromium.launch(headless=headless, proxy=playwright_proxy)  # type: ignore
+            browser = await chromium.launch(
+                headless=headless,
+                proxy=playwright_proxy,
+                executable_path=executable_path,
+            )  # type: ignore
             browser_context = await browser.new_context(viewport={"width": 1920, "height": 1080}, user_agent=user_agent)
             return browser_context
 
