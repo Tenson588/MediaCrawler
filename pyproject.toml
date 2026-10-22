@@ -27,6 +27,7 @@ dependencies = [
     "pyhumps>=3.8.0",
     "python-dotenv==1.0.1",
     "redis~=4.6.0",
+    "reportlab>=4.4.0,<5",
     "requests==2.32.3",
     "sqlalchemy>=2.0.43",
     "tenacity==8.2.2",

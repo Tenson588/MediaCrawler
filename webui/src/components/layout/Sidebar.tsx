@@ -64,6 +64,8 @@ export function Sidebar({ onShowDisclaimer }: SidebarProps) {
           </div>
         </button>
 
+        <a href="/reports" className="text-sm text-cyber-neon-cyan">监控报告 ↗</a>
+
         {/* Right: Actions and Status */}
         <div className="flex items-center gap-3">
           {/* Theme Toggle */}

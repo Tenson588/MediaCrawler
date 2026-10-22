@@ -20,6 +20,8 @@ import asyncio
 import subprocess
 import signal
 import os
+import sys
+import tempfile
 from typing import Optional, List
 from datetime import datetime
 from pathlib import Path
@@ -118,6 +120,8 @@ class CrawlerManager:
             await self._push_log(entry)
 
             try:
+                matplotlib_cache = Path(tempfile.gettempdir()) / "mediacrawler-matplotlib"
+                matplotlib_cache.mkdir(parents=True, exist_ok=True)
                 # Start subprocess
                 self.process = subprocess.Popen(
                     cmd,
@@ -127,7 +131,11 @@ class CrawlerManager:
                     encoding='utf-8',
                     bufsize=1,
                     cwd=str(self._project_root),
-                    env={**os.environ, "PYTHONUNBUFFERED": "1"}
+                    env={
+                        **os.environ,
+                        "PYTHONUNBUFFERED": "1",
+                        "MPLCONFIGDIR": str(matplotlib_cache),
+                    }
                 )
 
                 self.status = "running"
@@ -204,7 +212,9 @@ class CrawlerManager:
 
     def _build_command(self, config: CrawlerStartRequest) -> list:
         """Build main.py command line arguments"""
-        cmd = ["uv", "run", "python", "main.py"]
+        # Reuse the interpreter that successfully started the API. This avoids
+        # depending on a separate `uv` executable after the environment check.
+        cmd = [sys.executable, "main.py"]
 
         cmd.extend(["--platform", config.platform.value])
         cmd.extend(["--lt", config.login_type.value])

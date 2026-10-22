@@ -21,10 +21,7 @@ MediaCrawler WebUI API Server
 Start command: uvicorn api.main:app --port 8080 --reload
 Or: python -m api.main
 """
-import asyncio
 import os
-import sys
-import subprocess
 from pathlib import Path
 import uvicorn
 from fastapi import FastAPI
@@ -33,8 +30,10 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 
 from .routers import crawler_router, data_router, websocket_router
+from .routers.reports import router as reports_router
+from .services.runtime_manager import runtime_manager
 
-# Project root directory (used for running subprocesses like uv run main.py)
+# Project root directory used by the API and local runtime checks.
 PROJECT_ROOT = Path(__file__).parent.parent
 
 app = FastAPI(
@@ -61,9 +60,15 @@ app.add_middleware(
 )
 
 # Register routers
+app.include_router(reports_router, prefix="/api")
 app.include_router(crawler_router, prefix="/api")
 app.include_router(data_router, prefix="/api")
 app.include_router(websocket_router, prefix="/api")
+
+
+@app.get("/reports")
+async def serve_reports():
+    return FileResponse(PROJECT_ROOT / "api" / "static" / "reports.html")
 
 
 @app.get("/")
@@ -72,12 +77,8 @@ async def serve_frontend():
     index_path = os.path.join(WEBUI_DIR, "index.html")
     if os.path.exists(index_path):
         return FileResponse(index_path)
-    return {
-        "message": "MediaCrawler WebUI API",
-        "version": "1.0.0",
-        "docs": "/docs",
-        "note": "WebUI not found, please build it first: cd webui && npm run build"
-    }
+    return FileResponse(PROJECT_ROOT / "api" / "static" / "reports.html")
+
 
 
 @app.get("/api/health")
@@ -87,64 +88,25 @@ async def health_check():
 
 @app.get("/api/env/check")
 async def check_environment():
-    """Check if MediaCrawler environment is configured correctly"""
-    try:
-        # Run uv run main.py --help command to check environment
-        # Use PROJECT_ROOT so it works regardless of where uvicorn was started
-        if sys.platform == "win32":
-            loop = asyncio.get_running_loop()
-            process = await loop.run_in_executor(
-                None,
-                lambda: subprocess.run(
-                    ["uv", "run", "main.py", "--help"],
-                    capture_output=True,
-                    timeout=30.0,
-                    cwd=str(PROJECT_ROOT)
-                )
-            )
-            stdout, stderr = process.stdout, process.stderr  # bytes
-        else:
-            process = await asyncio.create_subprocess_exec(
-                "uv", "run", "main.py", "--help",
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                cwd=str(PROJECT_ROOT)  # Project root directory
-            )
-            stdout, stderr = await asyncio.wait_for(
-                process.communicate(),
-                timeout=30.0  # 30 seconds timeout
-            )
-        if process.returncode == 0:
-            return {
-                "success": True,
-                "message": "MediaCrawler environment configured correctly",
-                "output": stdout.decode("utf-8", errors="ignore")[:500]  # Truncate to first 500 characters
-            }
-        else:
-            error_msg = stderr.decode("utf-8", errors="ignore") or stdout.decode("utf-8", errors="ignore")
-            return {
-                "success": False,
-                "message": "Environment check failed",
-                "error": error_msg[:500]
-            }
-    except asyncio.TimeoutError:
-        return {
-            "success": False,
-            "message": "Environment check timeout",
-            "error": "Command execution exceeded 30 seconds"
-        }
-    except FileNotFoundError:
-        return {
-            "success": False,
-            "message": "uv command not found",
-            "error": "Please ensure uv is installed and configured in system PATH"
-        }
-    except Exception as e:
-        return {
-            "success": False,
-            "message": "Environment check error",
-            "error": f"{type(e).__name__}: {str(e) or 'Unknown'}"
-        }
+    """Run the same executable-environment check used by the dashboard."""
+    result = await runtime_manager.start(force=True)
+    return {
+        **result,
+        "success": result["ready"],
+        "output": result["message"],
+        "error": None if result["ready"] else result["message"],
+    }
+
+
+@app.get("/api/runtime/status")
+async def runtime_status():
+    return runtime_manager.snapshot()
+
+
+@app.post("/api/runtime/start")
+async def start_runtime(force: bool = False):
+    """Prepare the crawler runtime. Safe to call repeatedly from page load."""
+    return await runtime_manager.start(force=force)
 
 
 @app.get("/api/config/platforms")
