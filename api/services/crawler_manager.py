@@ -22,6 +22,7 @@ import signal
 import os
 import sys
 import tempfile
+import re
 from typing import Optional, List
 from datetime import datetime
 from pathlib import Path
@@ -207,7 +208,33 @@ class CrawlerManager:
             "platform": self.current_config.platform.value if self.current_config else None,
             "crawler_type": self.current_config.crawler_type.value if self.current_config else None,
             "started_at": self.started_at.isoformat() if self.started_at else None,
-            "error_message": None
+            "error_message": None,
+            "platform_access": self.get_access_diagnostics(),
+        }
+
+    def get_access_diagnostics(self) -> dict:
+        """Summarize explicit access-control signals from this process's logs."""
+        patterns = (
+            ("HTTP 401", re.compile(r"HTTP\s*401|status(?:_code)?[=: ]+401", re.I)),
+            ("HTTP 403", re.compile(r"HTTP\s*403|status(?:_code)?[=: ]+403", re.I)),
+            ("HTTP 429", re.compile(r"HTTP\s*429|status(?:_code)?[=: ]+429", re.I)),
+            ("验证码", re.compile(r"CAPTCHA|验证码|Verifytype|Verifyuuid", re.I)),
+            ("IP 限制", re.compile(r"IPBlock|IP\s*(?:blocked|ban)|IP.*(?:限制|封禁)", re.I)),
+        )
+        signals: list[dict[str, str]] = []
+        for entry in self._logs:
+            for label, pattern in patterns:
+                if pattern.search(entry.message):
+                    signals.append({"type": label, "message": entry.message[-300:]})
+                    break
+        return {
+            "suspected": bool(signals),
+            "summary": (
+                f"检测到 {len(signals)} 条平台访问限制信号，请展开检查日志。"
+                if signals
+                else "未发现明确的 401/403/429、验证码或 IP 限制信号。"
+            ),
+            "signals": signals[-5:],
         }
 
     def _build_command(self, config: CrawlerStartRequest) -> list:

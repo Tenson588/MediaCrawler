@@ -63,6 +63,31 @@ async def test_raw_response_rejects_access_http_status(monkeypatch, status_code)
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("status_code", [461, 471])
+async def test_captcha_response_stops_without_retry(monkeypatch, status_code):
+    calls = 0
+
+    async def request_impl(method, url, **kwargs):
+        nonlocal calls
+        calls += 1
+        return httpx.Response(
+            status_code,
+            headers={"Verifytype": "slider", "Verifyuuid": "test-id"},
+            request=httpx.Request(method, url),
+        )
+
+    monkeypatch.setattr(
+        "media_platform.xhs.client.make_async_client",
+        lambda **kwargs: FakeAsyncClient(request_impl),
+    )
+
+    with pytest.raises(PlatformAccessError, match="CAPTCHA appeared"):
+        await make_client().request("GET", "https://www.xiaohongshu.com/explore/test")
+
+    assert calls == 1
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("code", "expected_exception", "return_response"),
     [

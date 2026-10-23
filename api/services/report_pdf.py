@@ -15,6 +15,7 @@ from reportlab.lib.units import mm
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus import (
+    HRFlowable,
     KeepTogether,
     Paragraph,
     SimpleDocTemplate,
@@ -29,8 +30,8 @@ FONT_PATH = PROJECT_ROOT / "docs" / "STZHONGS.TTF"
 FONT_NAME = "MediaCrawlerChinese"
 PRICE_PATTERN = re.compile(
     r'(?:满\s*)?[\d,]+\s*(?:元\s*)?减\s*[\d,]+\s*(?:元)?'
-    r'|\d+(?:\.\d+)?\s*[—–-]\s*\d+(?:\.\d+)?\s*折(?:起)?'
-    r'|\d+(?:\.\d+)?\s*折(?:起)?'
+    r'|(?<![\d双])\d+(?:\.\d+)?\s*[—–-]\s*\d+(?:\.\d+)?\s*折(?:起)?'
+    r'|(?<![\d双])\d+(?:\.\d+)?\s*折(?:起)?'
     r'|[\d,]+\s*元'
 )
 
@@ -49,8 +50,10 @@ def _inline_markup(text: str, *, highlight_prices: bool = False) -> str:
         return f"@@LINK{len(links) - 1}@@"
 
     def remember_raw_link(match: re.Match) -> str:
-        links.append((match.group(0), match.group(0)))
-        return f"@@LINK{len(links) - 1}@@"
+        raw = match.group(0)
+        url = raw.rstrip('）。；，、.!！？?')
+        links.append((url, url))
+        return f"@@LINK{len(links) - 1}@@{raw[len(url):]}"
 
     text = text.replace('[话题]', '').replace('#', '')
     text = re.sub(r'\[([^]]+)]\((https?://[^)]+)\)', remember_link, text)
@@ -189,6 +192,8 @@ def generate_report_pdf(content: str, summary: str) -> bytes:
     ]))
 
     index = 0
+    current_section = ''
+    promotion_candidate_seen = False
     while index < len(lines):
         line = lines[index].strip()
         if line == '## 重点摘要':
@@ -200,9 +205,23 @@ def generate_report_pdf(content: str, summary: str) -> bytes:
             index += 1
             continue
         if line.startswith('## '):
-            story.append(Paragraph(_inline_markup(line[3:]), styles["h2"]))
+            current_section = line[3:].strip()
+            story.append(Paragraph(_inline_markup(current_section), styles["h2"]))
         elif line.startswith('### '):
-            story.append(Paragraph(_inline_markup(line[4:]), styles["h3"]))
+            heading = Paragraph(_inline_markup(line[4:]), styles["h3"])
+            if current_section in {'促销候选线索', '问题候选线索'} and promotion_candidate_seen:
+                story.append(KeepTogether([
+                    HRFlowable(
+                        width='100%', thickness=0.65,
+                        color=colors.HexColor('#D6E3E5'),
+                        spaceBefore=3.5 * mm, spaceAfter=1.5 * mm,
+                    ),
+                    heading,
+                ]))
+            else:
+                story.append(heading)
+            if current_section in {'促销候选线索', '问题候选线索'}:
+                promotion_candidate_seen = True
         elif line.startswith('|'):
             table_lines = []
             while index < len(lines) and lines[index].strip().startswith('|'):

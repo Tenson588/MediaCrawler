@@ -20,6 +20,11 @@
 
 # Xiaohongshu platform configuration
 
+# 小红书请求采用随机间隔，避免固定节奏和短时间连续访问。
+# 访问受限时程序会立即停止本轮任务，不会自动重试验证码请求。
+XHS_REQUEST_INTERVAL_MIN_SEC = 5
+XHS_REQUEST_INTERVAL_MAX_SEC = 10
+
 # Sorting method, the specific enumeration value is in media_platform/xhs/field.py
 SORT_TYPE = "time_descending"
 

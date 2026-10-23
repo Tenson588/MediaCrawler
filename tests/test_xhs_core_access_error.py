@@ -27,6 +27,8 @@ from media_platform.xhs.exception import IPBlockError, PlatformAccessError
 def make_crawler(xhs_client):
     crawler = XiaoHongShuCrawler.__new__(XiaoHongShuCrawler)
     crawler.xhs_client = xhs_client
+    crawler._access_restricted = False
+    crawler._sleep_between_requests = AsyncMock()
     return crawler
 
 
@@ -57,7 +59,7 @@ async def test_note_detail_task_skips_access_error(error):
 
 @pytest.mark.asyncio
 async def test_gather_survives_single_blocked_note():
-    """一条笔记被限流不能让同批次其他笔记的结果一起丢掉。"""
+    """一条笔记被限流后停止同批次尚未开始的请求。"""
     xhs_client = AsyncMock()
 
     async def get_note_by_id(note_id, xsec_source, xsec_token):
@@ -68,7 +70,7 @@ async def test_gather_survives_single_blocked_note():
     xhs_client.get_note_by_id.side_effect = get_note_by_id
     crawler = make_crawler(xhs_client)
 
-    semaphore = asyncio.Semaphore(2)
+    semaphore = asyncio.Semaphore(1)
     results = await asyncio.gather(
         *[
             crawler.get_note_detail_async_task(
@@ -81,7 +83,8 @@ async def test_gather_survives_single_blocked_note():
         ]
     )
 
-    assert [r.get("note_id") if r else None for r in results] == ["ok1", None, "ok2"]
+    assert [r.get("note_id") if r else None for r in results] == ["ok1", None, None]
+    assert xhs_client.get_note_by_id.await_count == 2
 
 
 @pytest.mark.asyncio

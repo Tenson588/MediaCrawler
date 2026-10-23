@@ -31,7 +31,10 @@ from fastapi.responses import FileResponse
 
 from .routers import crawler_router, data_router, websocket_router
 from .routers.reports import router as reports_router
+from .services.crawler_manager import crawler_manager
 from .services.runtime_manager import runtime_manager
+from .services.server_control import ServerControl
+from .services.xhs_verification import XhsVerificationLauncher
 
 # Project root directory used by the API and local runtime checks.
 PROJECT_ROOT = Path(__file__).parent.parent
@@ -41,6 +44,8 @@ app = FastAPI(
     description="API for controlling MediaCrawler from WebUI",
     version="1.0.0"
 )
+server_control = ServerControl(crawler_manager.stop)
+xhs_verification = XhsVerificationLauncher(PROJECT_ROOT)
 
 # Get webui static files directory
 WEBUI_DIR = os.path.join(os.path.dirname(__file__), "webui")
@@ -53,6 +58,7 @@ app.add_middleware(
         "http://localhost:3000",  # Backup port
         "http://127.0.0.1:5173",
         "http://127.0.0.1:3000",
+        "null",  # A locally opened reports.html uses an opaque file:// origin.
     ],
     allow_credentials=True,
     allow_methods=["*"],
@@ -92,6 +98,7 @@ async def check_environment():
     result = await runtime_manager.start(force=True)
     return {
         **result,
+        "platform_access": crawler_manager.get_access_diagnostics(),
         "success": result["ready"],
         "output": result["message"],
         "error": None if result["ready"] else result["message"],
@@ -100,13 +107,53 @@ async def check_environment():
 
 @app.get("/api/runtime/status")
 async def runtime_status():
-    return runtime_manager.snapshot()
+    return {
+        **runtime_manager.snapshot(),
+        "platform_access": crawler_manager.get_access_diagnostics(),
+    }
 
 
 @app.post("/api/runtime/start")
 async def start_runtime(force: bool = False):
     """Prepare the crawler runtime. Safe to call repeatedly from page load."""
-    return await runtime_manager.start(force=force)
+    return {
+        **(await runtime_manager.start(force=force)),
+        "platform_access": crawler_manager.get_access_diagnostics(),
+    }
+
+
+@app.post("/api/runtime/restart")
+async def restart_runtime():
+    """Restart this local API process and stop any active crawler first."""
+    scheduled = server_control.schedule_restart()
+    return {
+        "status": "restarting" if scheduled else "pending",
+        "message": "服务正在重启，页面会自动重新连接。",
+    }
+
+
+@app.post("/api/runtime/stop")
+async def stop_runtime():
+    """Stop this local API process and its active crawler child process."""
+    scheduled = server_control.schedule_stop()
+    return {
+        "status": "stopping" if scheduled else "pending",
+        "message": "服务正在关闭。再次使用时请双击启动器。",
+    }
+
+
+@app.post("/api/runtime/xhs-verification")
+async def open_xhs_verification():
+    """Open a visible browser using the crawler profile for manual CAPTCHA handling."""
+    if crawler_manager.process and crawler_manager.process.poll() is None:
+        await crawler_manager.stop()
+    return xhs_verification.open()
+
+
+@app.post("/api/runtime/xhs-verification/close")
+async def close_xhs_verification():
+    """Close the manual browser so the crawler can reuse its persisted profile."""
+    return xhs_verification.close()
 
 
 @app.get("/api/config/platforms")

@@ -98,6 +98,12 @@ class BrandMonitorManager:
 
     def snapshot(self) -> dict[str, Any]:
         logs = self.crawler.logs
+        diagnose_access = getattr(self.crawler, "get_access_diagnostics", None)
+        platform_access = (
+            diagnose_access()
+            if callable(diagnose_access)
+            else {"suspected": False, "summary": "本次没有可供判断的采集日志", "signals": []}
+        )
         return {
             "status": self.status,
             "phase": self.phase,
@@ -108,6 +114,7 @@ class BrandMonitorManager:
             "keywords": list(BRAND_MONITOR_KEYWORDS),
             "seeds": list(BRAND_MONITOR_SEEDS),
             "last_log": logs[-1].message if logs else None,
+            "platform_access": platform_access,
         }
 
     async def start(self) -> bool:

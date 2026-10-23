@@ -69,6 +69,17 @@ class XiaoHongShuCrawler(AbstractCrawler):
         self.cdp_manager = None
         self.ip_proxy_pool = None  # Proxy IP pool for automatic proxy refresh
         self._media_downloader: Optional[MediaDownloader] = None
+        self._access_restricted = False
+
+    async def _sleep_between_requests(self, reason: str) -> None:
+        """Use a conservative, non-fixed interval between XHS requests."""
+        minimum = max(0.0, float(config.XHS_REQUEST_INTERVAL_MIN_SEC))
+        maximum = max(minimum, float(config.XHS_REQUEST_INTERVAL_MAX_SEC))
+        delay = random.uniform(minimum, maximum)
+        utils.logger.info(
+            f"[XiaoHongShuCrawler] Sleeping for {delay:.1f} seconds {reason}"
+        )
+        await asyncio.sleep(delay)
 
     async def start(self) -> None:
         playwright_proxy_format, httpx_proxy_format = None, None
@@ -146,6 +157,11 @@ class XiaoHongShuCrawler(AbstractCrawler):
             config.CRAWLER_MAX_NOTES_COUNT = xhs_limit_count
         start_page = config.START_PAGE
         for keyword in config.KEYWORDS.split(","):
+            if self._access_restricted:
+                utils.logger.warning(
+                    "[XiaoHongShuCrawler.search] Access restriction detected; stopping remaining keywords"
+                )
+                break
             source_keyword_var.set(keyword)
             utils.logger.info(f"[XiaoHongShuCrawler.search] Current search keyword: {keyword}")
             page = 1
@@ -190,9 +206,14 @@ class XiaoHongShuCrawler(AbstractCrawler):
                     utils.logger.info(f"[XiaoHongShuCrawler.search] Note details: {note_details}")
                     await self.batch_get_note_comments(note_ids, xsec_tokens)
 
+                    if self._access_restricted:
+                        utils.logger.warning(
+                            "[XiaoHongShuCrawler.search] Access restriction detected; stopping current task"
+                        )
+                        return
+
                     # Sleep after each page navigation
-                    await asyncio.sleep(config.CRAWLER_MAX_SLEEP_SEC)
-                    utils.logger.info(f"[XiaoHongShuCrawler.search] Sleeping for {config.CRAWLER_MAX_SLEEP_SEC} seconds after page {page-1}")
+                    await self._sleep_between_requests(f"after page {page-1}")
                 except DataFetchError:
                     utils.logger.error("[XiaoHongShuCrawler.search] Get note detail error")
                     break
@@ -311,6 +332,11 @@ class XiaoHongShuCrawler(AbstractCrawler):
         note_detail = None
         utils.logger.info(f"[get_note_detail_async_task] Begin get note detail, note_id: {note_id}")
         async with semaphore:
+            if getattr(self, "_access_restricted", False):
+                utils.logger.warning(
+                    f"[get_note_detail_async_task] Skip note {note_id}: access restriction already detected"
+                )
+                return None
             try:
                 try:
                     note_detail = await self.xhs_client.get_note_by_id(note_id, xsec_source, xsec_token)
@@ -327,8 +353,7 @@ class XiaoHongShuCrawler(AbstractCrawler):
                 note_detail.update({"xsec_token": xsec_token, "xsec_source": xsec_source})
 
                 # Sleep after fetching note detail
-                await asyncio.sleep(config.CRAWLER_MAX_SLEEP_SEC)
-                utils.logger.info(f"[get_note_detail_async_task] Sleeping for {config.CRAWLER_MAX_SLEEP_SEC} seconds after fetching note {note_id}")
+                await self._sleep_between_requests(f"after fetching note {note_id}")
 
                 return note_detail
 
@@ -338,6 +363,7 @@ class XiaoHongShuCrawler(AbstractCrawler):
             except (IPBlockError, PlatformAccessError) as ex:
                 # Access restricted (IP block / rate limit / account security).
                 # Skip this note instead of aborting the whole asyncio.gather batch.
+                self._access_restricted = True
                 utils.logger.error(
                     f"[XiaoHongShuCrawler.get_note_detail_async_task] Access restricted while getting note {note_id}: {ex}. "
                     f"建议降低采集频率、更换 IP 或检查账号状态"
