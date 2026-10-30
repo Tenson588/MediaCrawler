@@ -24,12 +24,14 @@ import socket
 import httpx
 import signal
 import atexit
+from pathlib import Path
 from typing import Optional, Dict, Any
 from playwright.async_api import Browser, BrowserContext, Playwright
 
 import config
 from tools.browser_launcher import BrowserLauncher
 from tools import utils
+from tools.xhs_profile import xhs_profile_dir
 
 
 class CDPBrowserManager:
@@ -259,6 +261,8 @@ class CDPBrowserManager:
                 "browser_data",
                 f"cdp_{config.USER_DATA_DIR % config.PLATFORM}",
             )
+            if config.PLATFORM == "xhs":
+                user_data_dir = str(xhs_profile_dir(Path.cwd(), cdp=True))
             os.makedirs(user_data_dir, exist_ok=True)
             utils.logger.info(f"[CDPBrowserManager] User data directory: {user_data_dir}")
 

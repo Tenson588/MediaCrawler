@@ -96,6 +96,8 @@ def test_local_file_page_origin_can_reach_api():
 
 
 def test_xhs_verification_uses_crawler_profile(monkeypatch, tmp_path: Path):
+    monkeypatch.setattr("config.ENABLE_CDP_MODE", True)
+    monkeypatch.delenv("MEDIACRAWLER_XHS_PROFILE", raising=False)
     launched = {}
     monkeypatch.setattr(XhsVerificationLauncher, "_profile_process_ids", lambda self: [])
 
@@ -122,7 +124,7 @@ def test_xhs_verification_uses_crawler_profile(monkeypatch, tmp_path: Path):
 
     assert result["status"] == "opened"
     assert launched["cwd"] == tmp_path
-    assert launched["command"][1:4] == ["-m", "api.services.xhs_verification_browser", str(tmp_path / "browser_data" / "xhs_user_data_dir")]
+    assert launched["command"][1:4] == ["-m", "api.services.xhs_verification_browser", str(tmp_path / "browser_data" / "cdp_xhs_user_data_dir")]
     assert launched["command"][4] == str(status_file)
     assert launched["start_new_session"] is True
 

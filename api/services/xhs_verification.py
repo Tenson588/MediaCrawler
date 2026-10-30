@@ -10,6 +10,8 @@ import sys
 import time
 from pathlib import Path
 
+from tools.xhs_profile import xhs_profile_dir
+
 
 class XhsVerificationLauncher:
     def __init__(self, project_root: Path):
@@ -18,7 +20,7 @@ class XhsVerificationLauncher:
 
     @property
     def profile_dir(self) -> Path:
-        return self.project_root / "browser_data" / "xhs_user_data_dir"
+        return xhs_profile_dir(self.project_root)
 
     @property
     def status_file(self) -> Path:

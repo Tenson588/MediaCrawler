@@ -29,7 +29,7 @@ from tenacity import (
     retry,
     retry_if_not_exception_type,
     stop_after_attempt,
-    wait_fixed,
+    wait_random,
 )
 from tools.httpx_util import make_async_client
 
@@ -126,7 +126,7 @@ class XiaoHongShuClient(AbstractApiClient, ProxyRefreshMixin):
 
     @retry(
         stop=stop_after_attempt(3),
-        wait=wait_fixed(1),
+        wait=wait_random(min=30, max=60),
         retry=retry_if_not_exception_type(
             (NoteNotFoundError, IPBlockError, PlatformAccessError)
         ),
@@ -257,6 +257,10 @@ class XiaoHongShuClient(AbstractApiClient, ProxyRefreshMixin):
         headers = await self._pre_headers(uri, params={})
         async with make_async_client(proxy=self.proxy) as client:
             response = await client.get(f"{self._host}{uri}", headers=headers)
+            if response.status_code in {401, 403, 429, 461, 471}:
+                raise PlatformAccessError(
+                    f"XHS login check blocked with HTTP {response.status_code}; stopping login attempts"
+                )
             if response.status_code == 200:
                 return response.json()
         return None
@@ -273,6 +277,8 @@ class XiaoHongShuClient(AbstractApiClient, ProxyRefreshMixin):
             self_info: Dict = await self.query_self()
             if self_info and self_info.get("data", {}).get("result", {}).get("success"):
                 ping_flag = True
+        except (IPBlockError, PlatformAccessError):
+            raise
         except Exception as e:
             utils.logger.error(
                 f"[XiaoHongShuClient.pong] Check login state failed: {e}, and try to login again..."
@@ -689,9 +695,9 @@ class XiaoHongShuClient(AbstractApiClient, ProxyRefreshMixin):
 
     @retry(
         stop=stop_after_attempt(3),
-        wait=wait_fixed(1),
+        wait=wait_random(min=30, max=60),
         retry=retry_if_not_exception_type(
-            (RetryError, IPBlockError, PlatformAccessError)
+            (RetryError, IPBlockError, PlatformAccessError, json.JSONDecodeError)
         ),
     )
     async def get_note_by_id_from_html(

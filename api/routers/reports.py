@@ -661,15 +661,21 @@ def generate(request: GenerateRequest):
                       f'- 原文：https://www.xiaohongshu.com/explore/{note_id}'])
         conditions, related_source = deal_condition_context(row, all_rows)
         if conditions:
-            lines.append('- 价格与活动条件：')
-            lines.extend(f'  - **{label}**：{detail}' for label, detail in conditions)
             if related_source:
                 related_id = str(related_source.get('note_id') or '')
+                related_title = re.sub(
+                    r'\s+', ' ', str(related_source.get('title') or '无标题')
+                ).strip()[:100]
+                lines.append('- 关联活动参考（非本条原文，不能据此判断本产品适用）：')
                 lines.append(
-                    f'  - **关联来源**：{date_text(related_source.get("time"))} · '
-                    f'{related_source.get("title") or "无标题"} · '
+                    f'  - **参考来源**：{date_text(related_source.get("time"))} · '
+                    f'{related_title} · '
                     f'https://www.xiaohongshu.com/explore/{related_id}'
                 )
+                lines.extend(f'  - **参考·{label}**：{detail}' for label, detail in conditions)
+            else:
+                lines.append('- 本条原文中的价格与活动条件：')
+                lines.extend(f'  - **{label}**：{detail}' for label, detail in conditions)
         lines.extend(['', row['desc'] or '正文为空', ''])
     lines.extend(['## 全部匹配笔记', ''])
     lines.extend(f'- {date_text(row["time"])} | {row["title"] or "无标题"} | https://www.xiaohongshu.com/explore/{row["note_id"]}' for row in rows)

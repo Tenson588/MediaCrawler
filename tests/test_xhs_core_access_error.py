@@ -11,11 +11,12 @@ RetryError / NoteNotFoundError / DataFetchError / KeyError,导致单条笔记被
 覆盖:
 1. 笔记详情任务遇到 IPBlockError / PlatformAccessError 时返回 None 并跳过。
 2. 批量 gather 不会因为其中一条被限流而整体失败。
-3. 创作者主页被限流时跳过该创作者,而不是中断整个任务。
+3. 创作者主页被限流时停止整轮任务，不访问后续账号。
 """
 
 import asyncio
 from unittest.mock import AsyncMock
+from types import SimpleNamespace
 
 import pytest
 
@@ -29,6 +30,7 @@ def make_crawler(xhs_client):
     crawler.xhs_client = xhs_client
     crawler._access_restricted = False
     crawler._sleep_between_requests = AsyncMock()
+    crawler.context_page = SimpleNamespace(url="https://www.xiaohongshu.com/explore")
     return crawler
 
 
@@ -88,8 +90,8 @@ async def test_gather_survives_single_blocked_note():
 
 
 @pytest.mark.asyncio
-async def test_creator_flow_skips_blocked_creator(monkeypatch):
-    """创作者主页 403 时跳过该创作者,不中断整个采集任务。"""
+async def test_creator_flow_stops_after_blocked_creator(monkeypatch):
+    """创作者主页 403 时停止，不继续访问后续账号。"""
     monkeypatch.setattr(
         config,
         "XHS_CREATOR_ID_LIST",
@@ -121,7 +123,9 @@ async def test_creator_flow_skips_blocked_creator(monkeypatch):
         "media_platform.xhs.core.xhs_store.save_creator", AsyncMock(), raising=False
     )
 
-    await crawler.get_creators_and_notes()
+    with pytest.raises(PlatformAccessError):
+        await crawler.get_creators_and_notes()
 
-    # 被限流的创作者整体跳过,后面的创作者照常采集
-    assert crawled_user_ids == ["ok"]
+    # 被限流后不访问后面的创作者。
+    assert crawled_user_ids == []
+    assert xhs_client.get_creator_info.await_count == 1

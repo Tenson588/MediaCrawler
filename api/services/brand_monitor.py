@@ -91,7 +91,7 @@ class BrandMonitorManager:
                     **common,
                     crawler_type=CrawlerTypeEnum.SEARCH,
                     keywords=",".join(BRAND_MONITOR_KEYWORDS),
-                    max_notes_count=20,
+                    max_notes_count=5,
                 ),
             ),
         ]
@@ -161,6 +161,9 @@ class BrandMonitorManager:
                 if self._stop_requested:
                     break
                 return_code = self.crawler.process.returncode if self.crawler.process else -1
+                reason = self.crawler.failure_reason(return_code)
+                if reason:
+                    raise RuntimeError(f"{message}已停止：{reason}")
                 if return_code != 0:
                     raise RuntimeError(f"{message}失败，采集进程退出码 {return_code}")
 
@@ -172,6 +175,8 @@ class BrandMonitorManager:
             else:
                 self.status = "completed"
                 self.message = "品牌专项监控已完成，数据已写入本地 SQLite。"
+                if any("XHS_BUDGET_REACHED" in e.message for e in self.crawler.logs):
+                    self.message = "品牌监控已按本轮限额完成，剩余关键词未采集。"
         except Exception as exc:
             self.finished_at = datetime.now(TZ)
             self.status = "error"

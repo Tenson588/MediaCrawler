@@ -20,10 +20,17 @@
 
 # Xiaohongshu platform configuration
 
-# 小红书请求采用随机间隔，避免固定节奏和短时间连续访问。
+# 小红书采用低速采集间隔，减少连续请求的负担；不代表人工行为或免于风控。
 # 访问受限时程序会立即停止本轮任务，不会自动重试验证码请求。
-XHS_REQUEST_INTERVAL_MIN_SEC = 5
-XHS_REQUEST_INTERVAL_MAX_SEC = 10
+XHS_REQUEST_INTERVAL_MIN_SEC = 30
+XHS_REQUEST_INTERVAL_MAX_SEC = 60
+
+# 整次搜索任务的笔记详情尝试数和搜索页调用预算（不是每个关键词）。
+# 单篇详情可能调用 API、重试或 HTML 兜底，因此这不是底层 HTTP 请求总数。
+XHS_MAX_NOTES_PER_RUN = 15
+XHS_MAX_SEARCH_REQUESTS_PER_RUN = 12
+# SQLite 中最近 24 小时已保存的笔记不再请求详情；设为 0 可显式刷新。
+XHS_SKIP_RECENT_HOURS = 24
 
 # Sorting method, the specific enumeration value is in media_platform/xhs/field.py
 SORT_TYPE = "time_descending"

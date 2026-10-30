@@ -37,9 +37,10 @@ class DealerMonitorManager:
         self._lock = asyncio.Lock()
 
     def _progress(self) -> tuple[int, str | None, int]:
-        if self.status == "completed":
+        budget_limited = any("XHS_BUDGET_REACHED" in e.message for e in self.crawler.logs)
+        if self.status == "completed" and not budget_limited:
             return 100, self.keywords[-1] if self.keywords else None, len(self.keywords)
-        if self.status not in {"running", "stopping"}:
+        if self.status not in {"running", "stopping", "completed"}:
             return 0, None, 0
 
         current: str | None = None
@@ -57,6 +58,9 @@ class DealerMonitorManager:
             return 0, current, completed
         if current is None:
             return 2, None, 0
+        if self.status == "completed" and budget_limited:
+            completed += 1
+            return round(completed / len(self.keywords) * 100), current, completed
         progress = min(95, max(3, round((completed + 0.5) / len(self.keywords) * 100)))
         return progress, current, completed
 
@@ -81,6 +85,7 @@ class DealerMonitorManager:
             "finished_at": self.finished_at.isoformat() if self.finished_at else None,
             "last_log": logs[-1].message if logs else None,
             "platform_access": platform_access,
+            "budget_limited": any("XHS_BUDGET_REACHED" in e.message for e in logs),
         }
 
     async def start(self, keywords: list[str]) -> bool:
@@ -103,7 +108,7 @@ class DealerMonitorManager:
                 enable_media=False,
                 save_option=SaveDataOptionEnum.SQLITE,
                 headless=False,
-                max_notes_count=20,
+                max_notes_count=5,
             )
             if not await self.crawler.start(config):
                 return False
@@ -123,11 +128,18 @@ class DealerMonitorManager:
                 await asyncio.sleep(0.1)
             return_code = self.crawler.process.returncode if self.crawler.process else -1
             self.finished_at = datetime.now(TZ)
-            if return_code == 0:
+            explain_failure = getattr(self.crawler, "failure_reason", None)
+            reason = explain_failure(return_code) if callable(explain_failure) else None
+            if return_code == 0 and not reason:
                 self.status = "completed"
                 self.message = "经销商抓取已完成，本地数据已更新。"
+                if any("XHS_BUDGET_REACHED" in e.message for e in self.crawler.logs):
+                    self.message = "经销商抓取已按本轮限额完成，剩余关键词未采集。"
             else:
                 self.status = "error"
+                if reason:
+                    self.message = f"经销商抓取已停止：{reason}"
+                    return
                 profile_busy = any(
                     "profile is already in use" in entry.message.lower()
                     or "opening in existing browser session" in entry.message.lower()

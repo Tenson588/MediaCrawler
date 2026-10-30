@@ -23,11 +23,19 @@ import os
 import sys
 import tempfile
 import re
+import logging
+from logging.handlers import RotatingFileHandler
 from typing import Optional, List
 from datetime import datetime
 from pathlib import Path
 
 from ..schemas import CrawlerStartRequest, LogEntry
+
+
+class PrivateRotatingFileHandler(RotatingFileHandler):
+    def _open(self):
+        fd = os.open(self.baseFilename, os.O_CREAT | os.O_WRONLY | os.O_APPEND, 0o600)
+        return os.fdopen(fd, "a", encoding="utf-8")
 
 
 class CrawlerManager:
@@ -46,6 +54,54 @@ class CrawlerManager:
         self._project_root = Path(__file__).parent.parent.parent
         # Log queue - for pushing to WebSocket
         self._log_queue: Optional[asyncio.Queue] = None
+        self._disk_log: Optional[RotatingFileHandler] = None
+        self._log_write_error: Optional[str] = None
+        self._access_signals: list[dict[str, str]] = []
+
+    @staticmethod
+    def _sanitize_log(message: str) -> str:
+        # Raw note/search payloads can contain personal data, signed URLs and cookies.
+        if any(marker in message for marker in (
+            "Search notes response:", "Search notes res:", "Note details:",
+            "xhs note:", "xhs note comment:", "creator:{",
+        )):
+            return message.split("]", 1)[0] + "] 内容载荷已省略"
+        message = re.sub(
+            r"(?i)(?:--cookies\s+|\b(?:cookie|set-cookie|authorization)\s*['\"]?\s*[:=]).*",
+            "[登录凭据已隐藏]", message,
+        )
+        message = re.sub(
+            r"(?i)((?:[\w-]*(?:token|password|passwd|api[_-]?key|secret)|verifyuuid|a1|web_session)"
+            r"['\"]?\s*[:=]\s*['\"]?)[^\s,'\"&}\]]+",
+            r"\1[REDACTED]", message,
+        )
+        message = re.sub(r"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}", "[EMAIL]", message)
+        message = re.sub(r"(?<!\d)1[3-9]\d{9}(?!\d)", "[PHONE]", message)
+        message = message.replace(str(Path.home()), "[LOCAL_USER]")
+        return message
+
+    def _open_disk_log(self) -> None:
+        directory = self._project_root / ".runtime"
+        directory.mkdir(parents=True, exist_ok=True)
+        path = directory / "crawler.log"
+        # New files are private from creation, including on log rotation.
+        self._disk_log = PrivateRotatingFileHandler(path, maxBytes=2_000_000, backupCount=2, delay=True)
+        if path.exists():
+            path.chmod(0o600)
+
+    def failure_reason(self, return_code: int) -> str | None:
+        """Keep the actionable cause separate from the generic process exit code."""
+        if self._access_signals:
+            kind = self._access_signals[-1]["type"]
+            return f"检测到平台访问限制（{kind}），本轮已停止。请人工检查账号或完成平台验证后再决定是否重试。"
+        if any("profile is already in use" in e.message.lower()
+               or "opening in existing browser session" in e.message.lower() for e in self._logs):
+            return "人工验证窗口仍在使用采集登录资料。请关闭人工验证窗口后再重试。"
+        if return_code:
+            errors = [e.message for e in self._logs if e.level == "error"]
+            detail = errors[-1][-240:] if errors else "详细原因请查看本地 .runtime/crawler.log"
+            return f"采集进程退出码 {return_code}：{detail}"
+        return None
 
     @property
     def logs(self) -> List[LogEntry]:
@@ -64,8 +120,34 @@ class CrawlerManager:
             id=self._log_id,
             timestamp=datetime.now().strftime("%H:%M:%S"),
             level=level,
-            message=message
+            message=self._sanitize_log(message)
         )
+        signal_patterns = (
+            ("HTTP 401", r"HTTP\s*401|HTTP/[^ ]+ 401|status(?:_code)?[=: ]+401"),
+            ("HTTP 403", r"HTTP\s*403|HTTP/[^ ]+ 403|status(?:_code)?[=: ]+403"),
+            ("HTTP 429", r"HTTP\s*429|HTTP/[^ ]+ 429|status(?:_code)?[=: ]+429"),
+            ("验证码", r"CAPTCHA|验证码|verifytype|verifyuuid|需要人工验证"),
+            ("IP 限制", r"IPBlock|IP\s*(?:blocked|ban)|IP.*(?:限制|封禁)"),
+            ("账号或访问受限", r"PlatformAccessError|access restrict|HTTP\s*(?:461|471)|账号违规"),
+        )
+        for label, pattern in signal_patterns:
+            if re.search(pattern, entry.message, re.I):
+                self._access_signals.append({"type": label, "message": entry.message[-300:]})
+                self._access_signals = self._access_signals[-5:]
+                break
+        if self._disk_log is not None:
+            try:
+                # Use the handler's rotation logic, but surface write errors in status.
+                record = logging.LogRecord("crawler", 20, "", 0,
+                                           f"{datetime.now().isoformat()} {level} {entry.message}", (), None)
+                if self._disk_log.shouldRollover(record):
+                    self._disk_log.doRollover()
+                if self._disk_log.stream is None:
+                    self._disk_log.stream = self._disk_log._open()
+                self._disk_log.stream.write(record.getMessage() + "\n")
+                self._disk_log.flush()
+            except OSError:
+                self._log_write_error = "采集日志写入失败，请检查 .runtime 目录权限及磁盘空间"
         self._logs.append(entry)
         # Keep last 500 logs
         if len(self._logs) > 500:
@@ -102,6 +184,17 @@ class CrawlerManager:
             # Clear old logs
             self._logs = []
             self._log_id = 0
+            self._access_signals = []
+            self._log_write_error = None
+            try:
+                if self._disk_log:
+                    self._disk_log.close()
+                self._open_disk_log()
+            except OSError:
+                self._log_write_error = "采集日志无法创建，请检查 .runtime 目录权限及磁盘空间"
+                self.status = "error"
+                self._create_log_entry(self._log_write_error, "error")
+                return False
 
             # Clear pending queue (don't replace object to avoid WebSocket broadcast coroutine holding old queue reference)
             if self._log_queue is None:
@@ -208,35 +301,23 @@ class CrawlerManager:
             "platform": self.current_config.platform.value if self.current_config else None,
             "crawler_type": self.current_config.crawler_type.value if self.current_config else None,
             "started_at": self.started_at.isoformat() if self.started_at else None,
-            "error_message": None,
+            "error_message": self._log_write_error or self.failure_reason(
+                self.process.returncode if self.process and self.process.returncode is not None else 0
+            ),
+            "log_path": ".runtime/crawler.log",
             "platform_access": self.get_access_diagnostics(),
         }
 
     def get_access_diagnostics(self) -> dict:
         """Summarize explicit access-control signals from this process's logs."""
-        patterns = (
-            ("HTTP 401", re.compile(r"HTTP\s*401|status(?:_code)?[=: ]+401", re.I)),
-            ("HTTP 403", re.compile(r"HTTP\s*403|status(?:_code)?[=: ]+403", re.I)),
-            ("HTTP 429", re.compile(r"HTTP\s*429|status(?:_code)?[=: ]+429", re.I)),
-            ("验证码", re.compile(r"CAPTCHA|验证码|Verifytype|Verifyuuid", re.I)),
-            ("IP 限制", re.compile(r"IPBlock|IP\s*(?:blocked|ban)|IP.*(?:限制|封禁)", re.I)),
-        )
-        signals: list[dict[str, str]] = []
-        for entry in self._logs:
-            for label, pattern in patterns:
-                if pattern.search(entry.message):
-                    signals.append({"type": label, "message": entry.message[-300:]})
-                    break
         return {
-            "suspected": bool(signals),
+            "suspected": bool(self._access_signals),
             "summary": (
-                f"检测到 {len(signals)} 条平台访问限制信号，请展开检查日志。"
-                if signals
-                else "未发现明确的 401/403/429、验证码或 IP 限制信号。"
+                "检测到平台访问限制，请人工检查账号状态；本轮不会自动继续。"
+                if self._access_signals else "未发现明确的平台访问限制信号。"
             ),
-            "signals": signals[-5:],
+            "signals": list(self._access_signals),
         }
-
     def _build_command(self, config: CrawlerStartRequest) -> list:
         """Build main.py command line arguments"""
         # Reuse the interpreter that successfully started the API. This avoids
@@ -308,10 +389,11 @@ class CrawlerManager:
             # Process ended
             if self.status == "running":
                 exit_code = self.process.returncode if self.process else -1
-                if exit_code == 0:
+                reason = self.failure_reason(exit_code)
+                if not reason:
                     entry = self._create_log_entry("Crawler completed successfully", "success")
                 else:
-                    entry = self._create_log_entry(f"Crawler exited with code: {exit_code}", "warning")
+                    entry = self._create_log_entry(reason, "error")
                 await self._push_log(entry)
                 self.status = "idle"
 

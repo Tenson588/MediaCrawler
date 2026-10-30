@@ -20,7 +20,6 @@
 
 import asyncio
 import functools
-import sys
 from typing import Optional
 
 from playwright.async_api import BrowserContext, Page
@@ -31,6 +30,7 @@ import config
 from base.base_crawler import AbstractLogin
 from cache.cache_factory import CacheFactory
 from tools import utils
+from .exception import PlatformAccessError
 
 
 class XiaoHongShuLogin(AbstractLogin):
@@ -48,11 +48,16 @@ class XiaoHongShuLogin(AbstractLogin):
         self.login_phone = login_phone
         self.cookie_str = cookie_str
 
-    @retry(stop=stop_after_attempt(600), wait=wait_fixed(1), retry=retry_if_result(lambda value: value is False))
+    @retry(stop=stop_after_attempt(120), wait=wait_fixed(1), retry=retry_if_result(lambda value: value is False))
     async def check_login_state(self, no_logged_in_session: str) -> bool:
         """
         Verify login status using dual-check: UI elements and Cookies.
         """
+        url = self.context_page.url.lower()
+        if any(marker in url for marker in ("/captcha", "verifyuuid=", "verifytype=")):
+            raise PlatformAccessError("XHS CAPTCHA: 需要人工验证，本轮已停止")
+        if "请通过验证" in await self.context_page.content():
+            raise PlatformAccessError("XHS CAPTCHA: 需要人工验证，本轮已停止")
         # 1. Priority check: Check if the "Me" (Profile) node appears in the sidebar
         try:
             # Selector for elements containing "Me" text with a link pointing to the profile
@@ -67,10 +72,6 @@ class XiaoHongShuLogin(AbstractLogin):
                 return True
         except Exception:
             pass
-
-        # 2. Alternative: Check for CAPTCHA prompt
-        if "请通过验证" in await self.context_page.content():
-            utils.logger.info("[XiaoHongShuLogin.check_login_state] CAPTCHA appeared, please verify manually.")
 
         # 3. Compatibility fallback: Original Cookie-based change detection
         current_cookie = await self.browser_context.cookies()
@@ -156,9 +157,8 @@ class XiaoHongShuLogin(AbstractLogin):
 
         try:
             await self.check_login_state(no_logged_in_session)
-        except RetryError:
-            utils.logger.info("[XiaoHongShuLogin.login_by_mobile] Login xiaohongshu failed by mobile login method ...")
-            sys.exit()
+        except RetryError as exc:
+            raise RuntimeError("小红书手机登录等待超时，本轮已停止") from exc
 
         wait_redirect_seconds = 5
         utils.logger.info(f"[XiaoHongShuLogin.login_by_mobile] Login successful then wait for {wait_redirect_seconds} seconds redirect ...")
@@ -185,7 +185,7 @@ class XiaoHongShuLogin(AbstractLogin):
                 selector=qrcode_img_selector
             )
             if not base64_qrcode_img:
-                sys.exit()
+                raise RuntimeError("无法获取小红书登录二维码，请检查浏览器页面")
 
         # get not logged session
         current_cookie = await self.browser_context.cookies()
@@ -202,9 +202,8 @@ class XiaoHongShuLogin(AbstractLogin):
         utils.logger.info(f"[XiaoHongShuLogin.login_by_qrcode] waiting for scan code login, remaining time is 120s")
         try:
             await self.check_login_state(no_logged_in_session)
-        except RetryError:
-            utils.logger.info("[XiaoHongShuLogin.login_by_qrcode] Login xiaohongshu failed by qrcode login method ...")
-            sys.exit()
+        except RetryError as exc:
+            raise RuntimeError("小红书扫码登录等待超时，本轮已停止") from exc
 
         wait_redirect_seconds = 5
         utils.logger.info(f"[XiaoHongShuLogin.login_by_qrcode] Login successful then wait for {wait_redirect_seconds} seconds redirect ...")

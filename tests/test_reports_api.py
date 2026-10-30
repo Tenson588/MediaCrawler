@@ -43,7 +43,7 @@ def test_report_lifecycle(tmp_path, monkeypatch):
     assert report['filtered_overseas'] == 0
     assert '共发现 **1 条**中国大陆促销候选线索。' in report['content']
     assert '### 1. 冷山双十一优惠' in report['content']
-    assert '- 价格与活动条件：' in report['content']
+    assert '- 本条原文中的价格与活动条件：' in report['content']
     assert '**优惠**：满1000减120' in report['content']
     assert '**限制**：W27新款不参加' in report['content']
     assert report['content'].rfind('## 备注') > report['content'].rfind('## 全部匹配笔记')
@@ -328,6 +328,34 @@ def test_deal_conditions_can_use_related_same_brand_note():
     assert ('优惠', '2件9折｜3件直接85折') in conditions
     assert ('限制', 'W27新款不参与活动') in conditions
     assert ('渠道/地点', '东莞奥莱Burton门店') in conditions
+
+
+def test_related_deal_conditions_are_clearly_labeled_as_reference(tmp_path, monkeypatch):
+    database = tmp_path / 'notes.db'
+    now = int(datetime.now().timestamp())
+    with sqlite3.connect(database) as db:
+        db.execute('CREATE TABLE xhs_note (note_id TEXT,title TEXT,desc TEXT,nickname TEXT,time INTEGER,last_modify_ts INTEGER,source_keyword TEXT)')
+        db.executemany('INSERT INTO xhs_note VALUES (?,?,?,?,?,?,?)', [
+            ('product', '是谁还没有Nitro与冷山的限定fate',
+             '各位女神们，你们的梦中情鞋来了！#双十一来冷山#',
+             '冷山门店', now * 1000, now, '冷山雪具'),
+            ('activity', '冷山双11活动说明',
+             'NITRO 活动参考：老会员5张代金券自动到账；部分品牌款式不参加满减叠加',
+             '活动参考帖', (now - 86400) * 1000, now, '冷山雪具'),
+        ])
+    monkeypatch.setattr(reports, 'SQLITE_DB_PATH', str(database))
+    monkeypatch.setattr(reports, 'REPORT_DIR', tmp_path / 'reports')
+    app = FastAPI()
+    app.include_router(reports.router)
+    client = TestClient(app)
+
+    generated = client.post('/reports/generate', json={'keywords': '冷山', 'days': 7}).json()
+    product_section = generated['content'].split('### 1.', 1)[1].split('### 2.', 1)[0]
+    assert '关联活动参考（非本条原文，不能据此判断本产品适用）' in product_section
+    assert '**参考来源**' in product_section
+    assert '**参考·福利**' in product_section
+    assert '老会员5张代金券自动到账' in product_section
+    assert '本条原文中的价格与活动条件' not in product_section
 
 
 def test_pdf_markup_prints_full_url_and_cleans_topic_markers():

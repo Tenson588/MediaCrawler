@@ -11,6 +11,13 @@ from media_platform.xhs.client import XiaoHongShuClient
 from media_platform.xhs.exception import IPBlockError, PlatformAccessError
 
 
+@pytest.fixture(autouse=True)
+def offline_retry_waits(monkeypatch):
+    # Keep production backoff intact but never spend real time in offline tests.
+    monkeypatch.setattr(XiaoHongShuClient.request.retry, "sleep", AsyncMock())
+    monkeypatch.setattr(XiaoHongShuClient.get_note_by_id_from_html.retry, "sleep", AsyncMock())
+
+
 class FakeAsyncClient:
     def __init__(self, request_impl):
         self.request_impl = request_impl
@@ -215,3 +222,20 @@ async def test_html_detail_still_retries_parse_failures():
 
     assert client.request.await_count == 3
     assert client._extractor.extract_note_detail_from_html.call_count == 3
+
+
+@pytest.mark.asyncio
+async def test_html_json_parse_error_does_not_refetch_the_same_page():
+    client = make_client()
+    client.request = AsyncMock(return_value="<html>unsupported state</html>")
+    client._extractor.extract_note_detail_from_html = Mock(
+        side_effect=json.JSONDecodeError("unsupported state", "new Set()", 0)
+    )
+    with pytest.raises(json.JSONDecodeError):
+        await client.get_note_by_id_from_html("test", "pc_search", "token")
+    client.request.assert_awaited_once()
+
+
+def test_transport_retry_uses_slow_backoff():
+    wait = XiaoHongShuClient.request.retry.wait
+    assert all(30 <= wait(None) <= 60 for _ in range(20))
