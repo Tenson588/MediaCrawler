@@ -186,3 +186,6 @@ debug_tools
 database/*.db
 .omx/
 .runtime/
+
+# Local report authoring and render previews
+/tmp/
